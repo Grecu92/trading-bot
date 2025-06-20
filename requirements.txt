@@ -1,3 +1,1 @@
-python-binance
-pandas
-numpy
+python-binance==1.0.17
