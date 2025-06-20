@@ -1,125 +1,64 @@
-import os
+
 import time
 import requests
-import pandas as pd
 from binance.client import Client
 from binance.enums import *
-from telegram import Bot
-from telegram.utils.request import Request
 import ta
+import pandas as pd
+import numpy as np
+import os
 
-# Configurare variabile de mediu
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_USER_ID = os.getenv('TELEGRAM_USER_ID')
-BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')
-BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
-SYMBOL = os.getenv('SYMBOL', 'BTCDOMUSDT')
-INTERVAL = Client.KLINE_INTERVAL_15MINUTE
+api_key = os.getenv("BINANCE_API_KEY")
+api_secret = os.getenv("BINANCE_API_SECRET")
+symbol = os.getenv("SYMBOL", "BTCDOMUSDT")
+client = Client(api_key, api_secret)
 
-request = Request(con_pool_size=8)
-bot = Bot(token=TELEGRAM_TOKEN, request=request)
-client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
-
-RSI_PERIOD = 18
-EMA_PERIOD = 21
-
-position = None
-entry_price = None
-max_price = None
-min_price = None
-
-def send_alert(msg):
-    try:
-        bot.send_message(chat_id=TELEGRAM_USER_ID, text=msg)
-    except Exception as e:
-        print(f"Telegram error: {e}")
-
-def get_klines(symbol, interval, limit=100):
-    klines = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+def get_klines(symbol, interval='15m', limit=100):
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
     df = pd.DataFrame(klines, columns=[
         'timestamp', 'open', 'high', 'low', 'close', 'volume',
         'close_time', 'quote_asset_volume', 'number_of_trades',
-        'taker_buy_base_volume', 'taker_buy_quote_volume', 'ignore'
+        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
     ])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-    df = df.astype(float)
+    df['close'] = pd.to_numeric(df['close'])
+    df['volume'] = pd.to_numeric(df['volume'])
     return df
 
-def calculate_indicators(df):
-    df['rsi'] = ta.momentum.RSIIndicator(df['close'], RSI_PERIOD).rsi()
-    df['ema'] = ta.trend.EMAIndicator(df['close'], EMA_PERIOD).ema_indicator()
-    df['macd_diff'] = ta.trend.macd_diff(df['close'])
-    df['volume_ma'] = df['volume'].rolling(20).mean()
-    return df
+def signal_generator(df):
+    df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=18).rsi()
+    df['ema21'] = ta.trend.EMAIndicator(df['close'], window=21).ema_indicator()
+    macd = ta.trend.MACD(df['close'])
+    df['macd_diff'] = macd.macd_diff()
 
-def open_position(side, quantity, price):
-    global entry_price, max_price, min_price, position
+    latest = df.iloc[-1]
+    volume_mean = df['volume'].rolling(10).mean().iloc[-1]
+
+    if latest['rsi'] > 50 and latest['macd_diff'] > 0 and latest['close'] > latest['ema21'] and latest['volume'] > volume_mean:
+        return "LONG"
+    elif latest['rsi'] < 50 and latest['macd_diff'] < 0 and latest['close'] < latest['ema21'] and latest['volume'] > volume_mean:
+        return "SHORT"
+    else:
+        return "WAIT"
+
+def execute_order(signal):
+    balance = float(client.futures_account_balance()[1]['balance'])
+    qty = round((balance * 0.5 * 10) / float(client.futures_symbol_ticker(symbol=symbol)['price']), 1)
     try:
-        client.futures_create_order(symbol=SYMBOL, side=side, type=ORDER_TYPE_MARKET, quantity=quantity)
-        position = 'LONG' if side == SIDE_BUY else 'SHORT'
-        entry_price = price
-        max_price = price
-        min_price = price
-        send_alert(f"{position} order opened at {price}")
+        if signal == "LONG":
+            order = client.futures_create_order(symbol=symbol, side=SIDE_BUY, type=ORDER_TYPE_MARKET, quantity=qty)
+        elif signal == "SHORT":
+            order = client.futures_create_order(symbol=symbol, side=SIDE_SELL, type=ORDER_TYPE_MARKET, quantity=qty)
     except Exception as e:
-        send_alert(f"Order error: {e}")
+        print("Order failed:", str(e))
 
-def close_position(position_side, quantity, current_price, reason):
-    global position, entry_price
+while True:
     try:
-        close_side = SIDE_SELL if position_side == 'LONG' else SIDE_BUY
-        client.futures_create_order(symbol=SYMBOL, side=close_side, type=ORDER_TYPE_MARKET, quantity=quantity)
-        send_alert(f"{position_side} position closed at {current_price} due to {reason}")
-        position = None
-        entry_price = None
-    except Exception as e:
-        send_alert(f"Close error: {e}")
-
-def main():
-    global position, entry_price, max_price, min_price
-
-    while True:
-        try:
-            df = get_klines(SYMBOL, INTERVAL)
-            df = calculate_indicators(df)
-            rsi = df['rsi'].iloc[-1]
-            close = df['close'].iloc[-1]
-            ema = df['ema'].iloc[-1]
-            macd = df['macd_diff'].iloc[-1]
-            volume = df['volume'].iloc[-1]
-            vol_ma = df['volume_ma'].iloc[-1]
-
-            balance = float(client.futures_account_balance()[0]['balance'])
-            qty = round((balance * 0.5 * 10) / close, 3)
-
-            if position is None:
-                if rsi > 50 and macd > 0 and close > ema and volume > vol_ma:
-                    open_position(SIDE_BUY, qty, close)
-                elif rsi < 50 and macd < 0 and close < ema and volume > vol_ma:
-                    open_position(SIDE_SELL, qty, close)
-
-            elif position == 'LONG':
-                max_price = max(max_price, close)
-                if close <= entry_price * 0.995:
-                    close_position(position, qty, close, "stop loss")
-                elif max_price >= entry_price * 1.003 and close <= max_price * 0.998:
-                    close_position(position, qty, close, "trailing stop")
-                elif df['close'].iloc[-3] < entry_price * 1.007 and df['close'].iloc[-1] < entry_price:
-                    close_position(position, qty, close, "breakeven")
-
-            elif position == 'SHORT':
-                min_price = min(min_price, close)
-                if close >= entry_price * 1.005:
-                    close_position(position, qty, close, "stop loss")
-                elif min_price <= entry_price * 0.997 and close >= min_price * 1.002:
-                    close_position(position, qty, close, "trailing stop")
-                elif df['close'].iloc[-3] > entry_price * 0.993 and df['close'].iloc[-1] > entry_price:
-                    close_position(position, qty, close, "breakeven")
-
-        except Exception as e:
-            print(f"Main error: {e}")
+        df = get_klines(symbol)
+        signal = signal_generator(df)
+        print(f"Signal: {signal}")
+        if signal in ["LONG", "SHORT"]:
+            execute_order(signal)
         time.sleep(60)
-
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        print("Error in main loop:", str(e))
+        time.sleep(60)
