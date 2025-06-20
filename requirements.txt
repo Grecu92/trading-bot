@@ -1,2 +1,5 @@
-ccxt
+python-binance
+pandas
+python-telegram-bot==13.7
+ta
 requests
