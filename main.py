@@ -5,6 +5,7 @@ import pandas as pd
 from binance.client import Client
 from binance.enums import *
 from telegram import Bot
+from telegram.utils.request import Request
 import ta
 
 # Configurare variabile de mediu
@@ -15,8 +16,9 @@ BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
 SYMBOL = os.getenv('SYMBOL', 'BTCDOMUSDT')
 INTERVAL = Client.KLINE_INTERVAL_15MINUTE
 
+request = Request(con_pool_size=8)
+bot = Bot(token=TELEGRAM_TOKEN, request=request)
 client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
-bot = Bot(token=TELEGRAM_TOKEN)
 
 RSI_PERIOD = 18
 EMA_PERIOD = 21
@@ -91,14 +93,12 @@ def main():
             balance = float(client.futures_account_balance()[0]['balance'])
             qty = round((balance * 0.5 * 10) / close, 3)
 
-            # Entry logic
             if position is None:
                 if rsi > 50 and macd > 0 and close > ema and volume > vol_ma:
                     open_position(SIDE_BUY, qty, close)
                 elif rsi < 50 and macd < 0 and close < ema and volume > vol_ma:
                     open_position(SIDE_SELL, qty, close)
 
-            # Trailing stop logic
             elif position == 'LONG':
                 max_price = max(max_price, close)
                 if close <= entry_price * 0.995:
