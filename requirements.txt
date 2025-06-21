@@ -1,2 +1,4 @@
-python-binance==1.0.17
+python-binance
+pandas
+ta
 requests

@@ -1,9 +1,12 @@
+import os
 import time
 import requests
 from binance.client import Client
 from binance.enums import *
-import os
+import ta
+import pandas as pd
 
+# Config
 symbol = os.getenv("SYMBOL", "SOLUSDT")
 interval = Client.KLINE_INTERVAL_15MINUTE
 api_key = os.getenv("BINANCE_API_KEY")
@@ -13,46 +16,43 @@ telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
 client = Client(api_key, api_secret)
 
-def get_rsi(symbol, interval, period=18):
-    klines = client.get_klines(symbol=symbol, interval=interval, limit=period + 1)
-    closes = [float(kline[4]) for kline in klines]
-    deltas = [closes[i+1] - closes[i] for i in range(period)]
-    gains = [delta if delta > 0 else 0 for delta in deltas]
-    losses = [-delta if delta < 0 else 0 for delta in deltas]
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    rs = avg_gain / avg_loss if avg_loss != 0 else 0
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
-    data = {"chat_id": telegram_chat_id, "text": message}
-    try:
-        requests.post(url, data=data)
-    except Exception as e:
-        print(f"Telegram error: {e}")
+    payload = {"chat_id": telegram_chat_id, "text": message}
+    requests.post(url, data=payload)
 
-last_signal = None
+def get_rsi_signal(df):
+    rsi = ta.momentum.RSIIndicator(close=df["close"], window=18).rsi()
+    df["rsi"] = rsi
+    latest_rsi = df["rsi"].iloc[-1]
+    prev_rsi = df["rsi"].iloc[-2]
+
+    if prev_rsi < 50 and latest_rsi > 50:
+        return "LONG"
+    elif prev_rsi > 50 and latest_rsi < 50:
+        return "SHORT"
+    return None
+
+def get_klines(symbol, interval, limit=100):
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    df = pd.DataFrame(klines, columns=[
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
+    ])
+    df["close"] = df["close"].astype(float)
+    return df
+
+send_telegram_message(f"Bot started for symbol: {symbol}")
 
 while True:
     try:
-        rsi = get_rsi(symbol, interval)
-        print(f"Current RSI(18): {rsi:.2f}")
-
-        signal = None
-        if rsi > 50 and last_signal != "LONG":
-            signal = "LONG"
-            last_signal = "LONG"
-        elif rsi < 50 and last_signal != "SHORT":
-            signal = "SHORT"
-            last_signal = "SHORT"
-
+        df = get_klines(symbol, interval)
+        signal = get_rsi_signal(df)
         if signal:
             send_telegram_message(f"{signal} signal (RSI crossed 50)
-Trailing stop: 0.20%")
-
+Trailing Stop: 0.20%")
+        time.sleep(60)
     except Exception as e:
-        print(f"Error in main loop: {e}")
-
-    time.sleep(60)
+        send_telegram_message(f"Error: {e}")
+        time.sleep(60)
