@@ -1,82 +1,58 @@
-
-import time
 import os
+import time
+import requests
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
 from binance.enums import *
+import ta
+import pandas as pd
 
 # Config
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
 symbol = os.getenv("SYMBOL", "SOLUSDT")
-leverage = 10
+interval = Client.KLINE_INTERVAL_15MINUTE
+api_key = os.getenv("BINANCE_API_KEY")
+api_secret = os.getenv("BINANCE_API_SECRET")
+telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-client = Client(API_KEY, API_SECRET)
+client = Client(api_key, api_secret)
 
-# Set leverage
-try:
-    client.futures_change_leverage(symbol=symbol, leverage=leverage)
-except BinanceAPIException as e:
-    print(f"Leverage error: {e}")
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
+    payload = {"chat_id": telegram_chat_id, "text": message}
+    requests.post(url, data=payload)
 
-def get_quantity(usdt_balance, price):
-    qty = round((usdt_balance * 0.8 * leverage) / price, 3)  # 80% din capital, leverage x10
-    return qty
+def get_rsi_signal(df):
+    rsi = ta.momentum.RSIIndicator(close=df["close"], window=18).rsi()
+    df["rsi"] = rsi
+    latest_rsi = df["rsi"].iloc[-1]
+    prev_rsi = df["rsi"].iloc[-2]
 
-def get_balance():
-    balance = client.futures_account_balance()
-    usdt_balance = float([x for x in balance if x["asset"] == "USDT"][0]["balance"])
-    return usdt_balance
+    if prev_rsi < 50 and latest_rsi > 50:
+        return "LONG"
+    elif prev_rsi > 50 and latest_rsi < 50:
+        return "SHORT"
+    return None
 
-def get_price():
-    price_data = client.futures_symbol_ticker(symbol=symbol)
-    return float(price_data["price"])
+def get_klines(symbol, interval, limit=100):
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    df = pd.DataFrame(klines, columns=[
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
+    ])
+    df["close"] = df["close"].astype(float)
+    return df
 
-def place_order(side, quantity):
-    try:
-        order = client.futures_create_order(
-            symbol=symbol,
-            side=side,
-            type=ORDER_TYPE_MARKET,
-            quantity=quantity
-        )
-        print(f"Order executed: {side} {quantity}")
-        return order
-    except BinanceAPIException as e:
-        print(f"Order error: {e}")
-        return None
-
-# Trailing stop logic
-def manage_trade(order, entry_price):
-    activated = False
-    while True:
-        price = get_price()
-        pnl = (price - entry_price) / entry_price * 100 if order["side"] == "BUY" else (entry_price - price) / entry_price * 100
-        if pnl >= 0.3 and not activated:
-            print("Trailing Stop Activated")
-            activated = True
-        if activated and pnl <= 0.1:
-            print("Exiting with Trailing Stop")
-            side = SIDE_SELL if order["side"] == "BUY" else SIDE_BUY
-            place_order(side, float(order["origQty"]))
-            break
-        time.sleep(10)
+send_telegram_message(f"Bot started for symbol: {symbol}")
 
 while True:
     try:
-        price = get_price()
-        usdt_balance = get_balance()
-        quantity = get_quantity(usdt_balance, price)
-        if quantity <= 0:
-            print("Insufficient quantity to trade.")
-            time.sleep(60)
-            continue
-        print(f"Bot started for symbol: {symbol}")
-        # Simplă strategie RSI dummy pentru test (poți înlocui)
-        order = place_order(SIDE_BUY, quantity)
-        if order:
-            manage_trade(order, price)
+        df = get_klines(symbol, interval)
+        signal = get_rsi_signal(df)
+        if signal:
+            send_telegram_message(f"{signal} signal (RSI crossed 50)
+Trailing Stop: 0.20%")
         time.sleep(60)
     except Exception as e:
-        print(f"Error in main loop: {e}")
+        send_telegram_message(f"Error: {e}")
         time.sleep(60)
