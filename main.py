@@ -1,67 +1,82 @@
 
 import time
-from binance.client import Client
-from binance.enums import *
-from binance.exceptions import BinanceAPIException
 import os
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
+from binance.enums import *
 
-api_key = os.getenv("BINANCE_API_KEY")
-api_secret = os.getenv("BINANCE_API_SECRET")
+# Config
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
 symbol = os.getenv("SYMBOL", "SOLUSDT")
 leverage = 10
 
-client = Client(api_key, api_secret)
-client.futures_change_leverage(symbol=symbol, leverage=leverage)
+client = Client(API_KEY, API_SECRET)
+
+# Set leverage
+try:
+    client.futures_change_leverage(symbol=symbol, leverage=leverage)
+except BinanceAPIException as e:
+    print(f"Leverage error: {e}")
+
+def get_quantity(usdt_balance, price):
+    qty = round((usdt_balance * 0.8 * leverage) / price, 3)  # 80% din capital, leverage x10
+    return qty
 
 def get_balance():
     balance = client.futures_account_balance()
-    usdt_balance = next((item for item in balance if item["asset"] == "USDT"), None)
-    return float(usdt_balance["balance"]) if usdt_balance else 0
+    usdt_balance = float([x for x in balance if x["asset"] == "USDT"][0]["balance"])
+    return usdt_balance
 
 def get_price():
-    return float(client.futures_symbol_ticker(symbol=symbol)["price"])
+    price_data = client.futures_symbol_ticker(symbol=symbol)
+    return float(price_data["price"])
 
-def calculate_quantity(usdt_balance, price):
-    trade_value = usdt_balance * 0.8  # 80% din capital
-    quantity = (trade_value * leverage) / price
-    step_size = 0.01  # Ajustează în funcție de simbol dacă este nevoie
-    return round(quantity - (quantity % step_size), 2)
-
-while True:
+def place_order(side, quantity):
     try:
-        balance = get_balance()
-        price = get_price()
-        quantity = calculate_quantity(balance, price)
-
-        if quantity <= 0:
-            print("Insufficient quantity to trade.")
-            time.sleep(10)
-            continue
-
-        # Exemplu de tranzacție LONG
-        print("Bot started for symbol:", symbol)
-        print("LONG signal.")
-        client.futures_create_order(
+        order = client.futures_create_order(
             symbol=symbol,
-            side=SIDE_BUY,
+            side=side,
             type=ORDER_TYPE_MARKET,
             quantity=quantity
         )
-        # Trailing Stop configurabil
-        client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_SELL,
-            type=ORDER_TYPE_TRAILING_STOP_MARKET,
-            quantity=quantity,
-            callbackRate=1.0,  # trailing stop de 1%
-            reduceOnly=True
-        )
-
-        time.sleep(60)  # Așteaptă 1 minut înainte de următorul ciclu
-
+        print(f"Order executed: {side} {quantity}")
+        return order
     except BinanceAPIException as e:
         print(f"Order error: {e}")
+        return None
+
+# Trailing stop logic
+def manage_trade(order, entry_price):
+    activated = False
+    while True:
+        price = get_price()
+        pnl = (price - entry_price) / entry_price * 100 if order["side"] == "BUY" else (entry_price - price) / entry_price * 100
+        if pnl >= 0.3 and not activated:
+            print("Trailing Stop Activated")
+            activated = True
+        if activated and pnl <= 0.1:
+            print("Exiting with Trailing Stop")
+            side = SIDE_SELL if order["side"] == "BUY" else SIDE_BUY
+            place_order(side, float(order["origQty"]))
+            break
         time.sleep(10)
-    except Exception as ex:
-        print(f"Unexpected error: {ex}")
-        time.sleep(10)
+
+while True:
+    try:
+        price = get_price()
+        usdt_balance = get_balance()
+        quantity = get_quantity(usdt_balance, price)
+        if quantity <= 0:
+            print("Insufficient quantity to trade.")
+            time.sleep(60)
+            continue
+        print(f"Bot started for symbol: {symbol}")
+        # Simplă strategie RSI dummy pentru test (poți înlocui)
+        order = place_order(SIDE_BUY, quantity)
+        if order:
+            manage_trade(order, price)
+        time.sleep(60)
+    except Exception as e:
+        print(f"Error in main loop: {e}")
+        time.sleep(60)
