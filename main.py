@@ -1,91 +1,67 @@
 
 import time
-import os
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
-import pandas as pd
-from datetime import datetime
 from binance.enums import *
+from binance.exceptions import BinanceAPIException
+import os
 
 api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_API_SECRET")
 symbol = os.getenv("SYMBOL", "SOLUSDT")
-leverage = int(os.getenv("LEVERAGE", 10))
+leverage = 10
 
 client = Client(api_key, api_secret)
-
-def get_klines(symbol, interval, limit=100):
-    klines = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-    df = pd.DataFrame(klines, columns=[
-        'timestamp', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'quote_asset_volume', 'number_of_trades',
-        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-    ])
-    df['close'] = df['close'].astype(float)
-    df['rsi'] = compute_rsi(df['close'], 18)
-    return df
-
-def compute_rsi(series, period):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+client.futures_change_leverage(symbol=symbol, leverage=leverage)
 
 def get_balance():
     balance = client.futures_account_balance()
-    for b in balance:
-        if b['asset'] == 'USDT':
-            return float(b['balance'])
-    return 0
+    usdt_balance = next((item for item in balance if item["asset"] == "USDT"), None)
+    return float(usdt_balance["balance"]) if usdt_balance else 0
 
-def set_leverage(symbol, leverage):
-    try:
-        client.futures_change_leverage(symbol=symbol, leverage=leverage)
-    except BinanceAPIException as e:
-        print(f"Leverage error: {e}")
+def get_price():
+    return float(client.futures_symbol_ticker(symbol=symbol)["price"])
 
-def place_order(position, quantity):
+def calculate_quantity(usdt_balance, price):
+    trade_value = usdt_balance * 0.8  # 80% din capital
+    quantity = (trade_value * leverage) / price
+    step_size = 0.01  # Ajustează în funcție de simbol dacă este nevoie
+    return round(quantity - (quantity % step_size), 2)
+
+while True:
     try:
-        side = SIDE_BUY if position == 'LONG' else SIDE_SELL
-        order = client.futures_create_order(
+        balance = get_balance()
+        price = get_price()
+        quantity = calculate_quantity(balance, price)
+
+        if quantity <= 0:
+            print("Insufficient quantity to trade.")
+            time.sleep(10)
+            continue
+
+        # Exemplu de tranzacție LONG
+        print("Bot started for symbol:", symbol)
+        print("LONG signal.")
+        client.futures_create_order(
             symbol=symbol,
-            side=side,
+            side=SIDE_BUY,
             type=ORDER_TYPE_MARKET,
             quantity=quantity
         )
-        print(f"Order placed: {position}")
-        return order
+        # Trailing Stop configurabil
+        client.futures_create_order(
+            symbol=symbol,
+            side=SIDE_SELL,
+            type=ORDER_TYPE_TRAILING_STOP_MARKET,
+            quantity=quantity,
+            callbackRate=1.0,  # trailing stop de 1%
+            reduceOnly=True
+        )
+
+        time.sleep(60)  # Așteaptă 1 minut înainte de următorul ciclu
+
     except BinanceAPIException as e:
         print(f"Order error: {e}")
-        return None
-
-def calculate_quantity(price, usdt_amount):
-    return round(usdt_amount / price, 2)
-
-def run():
-    set_leverage(symbol, leverage)
-    while True:
-        try:
-            df = get_klines(symbol, '15m')
-            last_rsi = df['rsi'].iloc[-1]
-            price = df['close'].iloc[-1]
-            balance = get_balance()
-            usdt_trade = balance * 0.5
-            qty = calculate_quantity(price, usdt_trade)
-
-            if last_rsi > 50:
-                place_order('LONG', qty)
-            elif last_rsi < 50:
-                place_order('SHORT', qty)
-            else:
-                print("WAIT - No signal")
-
-            time.sleep(60)
-        except Exception as e:
-            print(f"Error in main loop: {e}")
-            time.sleep(60)
-
-if __name__ == "__main__":
-    print(f"Bot started for symbol: {symbol}")
-    run()
+        time.sleep(10)
+    except Exception as ex:
+        print(f"Unexpected error: {ex}")
+        time.sleep(10)
