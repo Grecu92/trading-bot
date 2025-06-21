@@ -1,52 +1,57 @@
-import os
 import time
-import requests
 from binance.client import Client
-from binance.enums import HistoricalKlinesType
-import ta
+import pandas as pd
+from ta.momentum import RSIIndicator
+import requests
 
-# Setări din variabilele de mediu
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-SYMBOL = os.getenv("SYMBOL", "SOLUSDT")
+API_KEY = 'API_KEY_TAU'
+API_SECRET = 'SECRET_KEY_TAU'
+symbol = "SOLUSDT"
+interval = Client.KLINE_INTERVAL_15MINUTE
+rsi_period = 18
+telegram_token = "TOKENUL_TAU"
+telegram_chat_id = "CHAT_ID_TAU"
 
 client = Client(API_KEY, API_SECRET)
 
+def get_klines(symbol, interval, limit=100):
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    df = pd.DataFrame(klines, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_asset_volume', 'number_of_trades',
+        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+    ])
+    df['close'] = pd.to_numeric(df['close'])
+    return df
+
+def calculate_rsi(data):
+    rsi = RSIIndicator(close=data['close'], window=rsi_period).rsi()
+    return rsi.iloc[-1]
+
 def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    requests.post(url, data=data)
+    url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
+    payload = {"chat_id": telegram_chat_id, "text": message}
+    requests.post(url, data=payload)
 
-def fetch_rsi(symbol):
-    klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=50, klines_type=HistoricalKlinesType.SPOT)
-    closes = [float(k[4]) for k in klines]
-    df = ta.utils.pd.DataFrame({'close': closes})
-    df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=18).rsi()
-    return df['rsi'].iloc[-2], df['rsi'].iloc[-1]
+print(f"Bot started for symbol: {symbol}")
 
-prev_signal = None
-
-send_telegram_message(f"Bot started for symbol: {SYMBOL}")
+last_signal = None
 
 while True:
     try:
-        rsi_prev, rsi_now = fetch_rsi(SYMBOL)
-        if rsi_prev < 50 and rsi_now >= 50:
-            signal = "LONG"
-        elif rsi_prev > 50 and rsi_now <= 50:
-            signal = "SHORT"
-        else:
-            signal = None
+        df = get_klines(symbol, interval)
+        rsi = calculate_rsi(df)
 
-        if signal and signal != prev_signal:
-            send_telegram_message(f"{signal} signal (RSI crossed 50)")
-            send_telegram_message("Trailing TP 0.20% logic enabled.")
-            prev_signal = signal
+        if rsi > 50 and last_signal != "LONG":
+            send_telegram_message(f"LONG signal (RSI crossed 50 ↑) — RSI: {rsi:.2f}")
+            last_signal = "LONG"
+
+        elif rsi < 50 and last_signal != "SHORT":
+            send_telegram_message(f"SHORT signal (RSI crossed 50 ↓) — RSI: {rsi:.2f}")
+            last_signal = "SHORT"
 
         time.sleep(60)
 
     except Exception as e:
-        send_telegram_message(f"Error: {str(e)}")
+        print(f"Error in main loop: {e}")
         time.sleep(60)
