@@ -1,70 +1,91 @@
 
 import time
-from binance.client import Client
-from binance.enums import *
 import os
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
+import pandas as pd
+from datetime import datetime
+from binance.enums import *
 
 api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_API_SECRET")
 symbol = os.getenv("SYMBOL", "SOLUSDT")
-leverage = 10
+leverage = int(os.getenv("LEVERAGE", 10))
 
 client = Client(api_key, api_secret)
 
-client.futures_change_leverage(symbol=symbol, leverage=leverage)
-
-def get_rsi(symbol, interval='15m', limit=100):
+def get_klines(symbol, interval, limit=100):
     klines = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
-    closes = [float(k[4]) for k in klines]
-    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-    gains = [delta if delta > 0 else 0 for delta in deltas]
-    losses = [-delta if delta < 0 else 0 for delta in deltas]
-    avg_gain = sum(gains[-14:]) / 14
-    avg_loss = sum(losses[-14:]) / 14
-    rs = avg_gain / avg_loss if avg_loss != 0 else 0
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    df = pd.DataFrame(klines, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_asset_volume', 'number_of_trades',
+        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+    ])
+    df['close'] = df['close'].astype(float)
+    df['rsi'] = compute_rsi(df['close'], 18)
+    return df
+
+def compute_rsi(series, period):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
 def get_balance():
-    balance_info = client.futures_account_balance()
-    usdt_balance = [b for b in balance_info if b['asset'] == 'USDT'][0]
-    return float(usdt_balance['balance']) / 2
+    balance = client.futures_account_balance()
+    for b in balance:
+        if b['asset'] == 'USDT':
+            return float(b['balance'])
+    return 0
 
-def place_order(side, quantity):
+def set_leverage(symbol, leverage):
     try:
-        quantity = round(quantity, 3)
+        client.futures_change_leverage(symbol=symbol, leverage=leverage)
+    except BinanceAPIException as e:
+        print(f"Leverage error: {e}")
+
+def place_order(position, quantity):
+    try:
+        side = SIDE_BUY if position == 'LONG' else SIDE_SELL
         order = client.futures_create_order(
             symbol=symbol,
             side=side,
-            type=FUTURE_ORDER_TYPE_MARKET,
+            type=ORDER_TYPE_MARKET,
             quantity=quantity
         )
-        print(f"Order placed: {side}, Quantity: {quantity}")
-    except Exception as e:
-        print("Order error:", e)
+        print(f"Order placed: {position}")
+        return order
+    except BinanceAPIException as e:
+        print(f"Order error: {e}")
+        return None
 
-def main():
-    print(f"Bot started for symbol: {symbol}")
+def calculate_quantity(price, usdt_amount):
+    return round(usdt_amount / price, 2)
+
+def run():
+    set_leverage(symbol, leverage)
     while True:
         try:
-            rsi = get_rsi(symbol)
-            print(f"RSI: {rsi}")
-            usdt_balance = get_balance()
-            price = float(client.futures_mark_price(symbol=symbol)["markPrice"])
-            quantity = (usdt_balance * leverage) / price
-            quantity = round(quantity, 3)
+            df = get_klines(symbol, '15m')
+            last_rsi = df['rsi'].iloc[-1]
+            price = df['close'].iloc[-1]
+            balance = get_balance()
+            usdt_trade = balance * 0.5
+            qty = calculate_quantity(price, usdt_trade)
 
-            if rsi > 50:
-                print("LONG signal.")
-                place_order(SIDE_BUY, quantity)
-            elif rsi < 50:
-                print("SHORT signal.")
-                place_order(SIDE_SELL, quantity)
+            if last_rsi > 50:
+                place_order('LONG', qty)
+            elif last_rsi < 50:
+                place_order('SHORT', qty)
+            else:
+                print("WAIT - No signal")
 
             time.sleep(60)
         except Exception as e:
-            print("Error in main loop:", e)
+            print(f"Error in main loop: {e}")
             time.sleep(60)
 
 if __name__ == "__main__":
-    main()
+    print(f"Bot started for symbol: {symbol}")
+    run()
