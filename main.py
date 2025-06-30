@@ -1,48 +1,64 @@
-
 import time
 import requests
-import pandas as pd
 from binance.client import Client
 from ta.momentum import RSIIndicator
-from datetime import datetime
+import pandas as pd
 
-# Setări Binance și Telegram
-API_KEY = "YOUR_BINANCE_API_KEY"
-API_SECRET = "YOUR_BINANCE_SECRET_KEY"
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "AVAXUSDT", "DOGEUSDT", "MATICUSDT", "DOTUSDT",
-           "TRXUSDT", "LTCUSDT", "BCHUSDT", "LINKUSDT", "XLMUSDT", "ATOMUSDT", "ETCUSDT", "FILUSDT", "ICPUSDT", "HBARUSDT",
-           "NEARUSDT", "EGLDUSDT", "VETUSDT", "APEUSDT", "ARBUSDT", "SANDUSDT", "MANAUSDT", "RUNEUSDT", "AAVEUSDT", "GRTUSDT",
-           "FTMUSDT", "XTZUSDT", "CROUSDT", "GALAUSDT", "DYDXUSDT", "GMXUSDT", "RNDRUSDT", "LDOUSDT", "FLOWUSDT", "TUSDT",
-           "KAVAUSDT", "ENSUSDT", "IMXUSDT", "OPUSDT", "ZILUSDT", "CKBUSDT", "DASHUSDT", "PEPEUSDT", "SHIBUSDT", "STXUSDT"]
+import os
 
-client = Client(API_KEY, API_SECRET)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
+
+client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+
+SYMBOLS = [
+    "ALPHAUSDT", "SOONUSDT", "DEXEUSDT", "BMTUSDT", "LEVERUSDT",
+    "RESOLVUSDT", "HOOKUSDT", "DFUSDT", "ZKJUSDT", "CHESSUSDT",
+    "LISTAUSDT", "FXSUSDT", "BSWUSDT", "KMNOUSDT", "MAVIAUSDT",
+    "RELIUSDT", "WAXPUSDT", "PLUMEUSDT", "GUSDT", "MELANIAUSDT",
+    "HUSDT", "DMCUSDT", "CTKUSDT", "BROCCOLI714USDT", "1000CATUSDT",
+    "SAHARAUSDT", "PENGUSDT", "BIDUSDT", "SPKUSDT", "SIRENUSDT",
+    "LPTUSDT", "CHILLGUYUSDT", "PROMUSDT", "HFTUSDT", "SQDUSDT",
+    "OGNUSDT", "KOMAUSDT", "DRIFTUSDT", "CGPTUSDT", "FARTCOINUSDT",
+    "CGPTUSDT", "MUBARAKUSDT", "EPTUSDT", "SUPERUSDT", "HOMEUSDT",
+    "JUPUSDT", "BANKUSDT", "ARUSDT", "BUSDT", "A16ZUSDT"
+]
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     requests.post(url, data=payload)
 
-def fetch_rsi(symbol):
-    try:
-        klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=100)
-        df = pd.DataFrame(klines, columns=["timestamp", "o", "h", "l", "c", "v", "ct", "q", "n", "taker_base", "taker_quote", "ignore"])
-        df["c"] = df["c"].astype(float)
-        rsi = RSIIndicator(df["c"], window=18).rsi().iloc[-1]
-        return rsi
-    except Exception as e:
-        print(f"Eroare la {symbol}: {e}")
-        return None
+def get_rsi(symbol):
+    klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=100)
+    df = pd.DataFrame(klines, columns=[
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
+    ])
+    df["close"] = pd.to_numeric(df["close"])
+    rsi = RSIIndicator(df["close"], window=18).rsi()
+    return rsi.iloc[-1]
 
-print("Botul a pornit. Se verifică RSI pentru 50 de monede...")
+def main():
+    print("Bot started monitoring RSI(18)...")
+    sent_alerts = {}
+    while True:
+        for symbol in SYMBOLS:
+            try:
+                rsi = get_rsi(symbol)
+                last_signal = sent_alerts.get(symbol)
+                if rsi > 60 and last_signal != "LONG":
+                    send_telegram_message(f"{symbol} - RSI crossed above 60 🚀 (LONG signal)")
+                    sent_alerts[symbol] = "LONG"
+                elif rsi < 30 and last_signal != "SHORT":
+                    send_telegram_message(f"{symbol} - RSI crossed below 30 📉 (SHORT signal)")
+                    sent_alerts[symbol] = "SHORT"
+            except Exception as e:
+                print(f"Error fetching RSI for {symbol}: {e}")
+        time.sleep(60)
 
-while True:
-    for symbol in SYMBOLS:
-        rsi = fetch_rsi(symbol)
-        if rsi:
-            if rsi > 70:
-                send_telegram_message(f"{symbol}: RSI(18) peste 70 – posibil SHORT!")
-            elif rsi < 30:
-                send_telegram_message(f"{symbol}: RSI(18) sub 30 – posibil LONG!")
-    time.sleep(60 * 15)
+if __name__ == "__main__":
+    main()
