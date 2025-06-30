@@ -1,51 +1,48 @@
+
 import time
+import requests
 import pandas as pd
 from binance.client import Client
 from ta.momentum import RSIIndicator
-import requests
+from datetime import datetime
 
-api_key = "API_KEY"
-api_secret = "API_SECRET"
-client = Client(api_key, api_secret)
+# Setări Binance și Telegram
+API_KEY = "YOUR_BINANCE_API_KEY"
+API_SECRET = "YOUR_BINANCE_SECRET_KEY"
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "AVAXUSDT", "DOGEUSDT", "MATICUSDT", "DOTUSDT",
+           "TRXUSDT", "LTCUSDT", "BCHUSDT", "LINKUSDT", "XLMUSDT", "ATOMUSDT", "ETCUSDT", "FILUSDT", "ICPUSDT", "HBARUSDT",
+           "NEARUSDT", "EGLDUSDT", "VETUSDT", "APEUSDT", "ARBUSDT", "SANDUSDT", "MANAUSDT", "RUNEUSDT", "AAVEUSDT", "GRTUSDT",
+           "FTMUSDT", "XTZUSDT", "CROUSDT", "GALAUSDT", "DYDXUSDT", "GMXUSDT", "RNDRUSDT", "LDOUSDT", "FLOWUSDT", "TUSDT",
+           "KAVAUSDT", "ENSUSDT", "IMXUSDT", "OPUSDT", "ZILUSDT", "CKBUSDT", "DASHUSDT", "PEPEUSDT", "SHIBUSDT", "STXUSDT"]
 
-symbols = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
-    "LTCUSDT", "TRXUSDT", "LINKUSDT", "BCHUSDT", "XLMUSDT", "ATOMUSDT", "UNIUSDT", "ETCUSDT", "HBARUSDT", "VETUSDT",
-    "FILUSDT", "ICPUSDT", "NEARUSDT", "APEUSDT", "GRTUSDT", "QNTUSDT", "EGLDUSDT", "SANDUSDT", "MANAUSDT", "XTZUSDT",
-    "AAVEUSDT", "THETAUSDT", "AXSUSDT", "RUNEUSDT", "SNXUSDT", "KAVAUSDT", "FLOWUSDT", "CHZUSDT", "CRVUSDT", "ENJUSDT",
-    "1INCHUSDT", "BATUSDT", "ZILUSDT", "DYDXUSDT", "LRCUSDT", "STMXUSDT", "SKLUSDT", "XEMUSDT", "WAVESUSDT", "ANKRUSDT"
-]
-
-telegram_token = "YOUR_TELEGRAM_BOT_TOKEN"
-telegram_chat_id = "YOUR_CHAT_ID"
+client = Client(API_KEY, API_SECRET)
 
 def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
-    data = {"chat_id": telegram_chat_id, "text": message}
-    requests.post(url, data=data)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message}
+    requests.post(url, data=payload)
 
-def get_rsi(symbol):
-    klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=100)
-    close_prices = [float(k[4]) for k in klines]
-    df = pd.DataFrame(close_prices, columns=["close"])
-    rsi = RSIIndicator(df["close"], window=18).rsi()
-    return rsi.iloc[-1]
+def fetch_rsi(symbol):
+    try:
+        klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=100)
+        df = pd.DataFrame(klines, columns=["timestamp", "o", "h", "l", "c", "v", "ct", "q", "n", "taker_base", "taker_quote", "ignore"])
+        df["c"] = df["c"].astype(float)
+        rsi = RSIIndicator(df["c"], window=18).rsi().iloc[-1]
+        return rsi
+    except Exception as e:
+        print(f"Eroare la {symbol}: {e}")
+        return None
 
-last_signal = {}
+print("Botul a pornit. Se verifică RSI pentru 50 de monede...")
 
 while True:
-    for symbol in symbols:
-        try:
-            rsi = get_rsi(symbol)
-            last = last_signal.get(symbol)
-
-            if rsi > 70 and last != "overbought":
-                send_telegram_message(f"{symbol}: RSI(18) peste 70 (overbought)")
-                last_signal[symbol] = "overbought"
-            elif rsi < 30 and last != "oversold":
-                send_telegram_message(f"{symbol}: RSI(18) sub 30 (oversold)")
-                last_signal[symbol] = "oversold"
-        except Exception as e:
-            print(f"Eroare la {symbol}: {e}")
-
-    time.sleep(60)
+    for symbol in SYMBOLS:
+        rsi = fetch_rsi(symbol)
+        if rsi:
+            if rsi > 70:
+                send_telegram_message(f"{symbol}: RSI(18) peste 70 – posibil SHORT!")
+            elif rsi < 30:
+                send_telegram_message(f"{symbol}: RSI(18) sub 30 – posibil LONG!")
+    time.sleep(60 * 15)
