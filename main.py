@@ -1,71 +1,55 @@
-
 import time
 import requests
 from binance.client import Client
 from ta.momentum import RSIIndicator
 import pandas as pd
-from datetime import datetime
-import pytz
 
-BINANCE_API_KEY = "your_binance_api_key"
-BINANCE_API_SECRET = "your_binance_api_secret"
-TELEGRAM_BOT_TOKEN = "your_telegram_bot_token"
-TELEGRAM_CHAT_ID = "your_chat_id"
+# Configurări Binance
+api_key = "YOUR_BINANCE_API_KEY"
+api_secret = "YOUR_BINANCE_API_SECRET"
+client = Client(api_key, api_secret)
 
-SYMBOLS = [
-    "USUALUSDT", "HIFTUSDT", "AGTUSDT", "HUSPOT", "GOATUSDT", "SQDUSDT", "VIRTUALUSDT",
-    "AI162USDT", "DEGENUSDT", "ARKUSDT", "POPCATUSDT", "LRCUSDT", "SSVSUSDT", "JELLYJELLYUSDT",
-    "VANRYUSDT", "MYROUSDT", "PONKEUSDT", "PNUTUSDT", "PNUTUSDC", "MUBARAKUSDT",
-    "SKYAIUSDT", "SWARMSUSDT", "PLUMEUSDT", "AVAAIUSDT", "NEIROUSDT", "BIDUSDT", "GRIFFAINUSDT",
-    "CHILLGUYUSDT", "MERLUSDT", "FIDAUSDT", "PORTALUSDT", "FISUSDT", "ARCUSDT", "SPXUSDT",
-    "1000000MOGUSDT", "MOODENGUSDT", "1000000BOBUSDT"
-]
+# Configurări Telegram
+telegram_token = "YOUR_TELEGRAM_BOT_TOKEN"
+telegram_chat_id = "YOUR_TELEGRAM_CHAT_ID"
 
-client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+symbol = "PARTIUSDT"
+interval = Client.KLINE_INTERVAL_15MINUTE
 
 def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    requests.post(url, data=payload)
+    url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
+    data = {"chat_id": telegram_chat_id, "text": message}
+    requests.post(url, data=data)
 
-def get_rsi(symbol):
-    try:
-        klines = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=100)
-        df = pd.DataFrame(klines, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_asset_volume', 'number_of_trades',
-            'taker_buy_base', 'taker_buy_quote', 'ignore'
-        ])
-        df['close'] = df['close'].astype(float)
-        rsi = RSIIndicator(df['close'], window=18).rsi()
-        return rsi.iloc[-2], rsi.iloc[-1]  # previous, current
-    except Exception as e:
-        return None, None
+def fetch_data():
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=100)
+    df = pd.DataFrame(klines, columns=[
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
+    ])
+    df["close"] = df["close"].astype(float)
+    df["open"] = df["open"].astype(float)
+    return df
 
-def main():
-    sent_alerts = set()
-    while True:
-        for symbol in SYMBOLS:
-            prev_rsi, curr_rsi = get_rsi(symbol)
-            if prev_rsi is None or curr_rsi is None:
-                continue
+def analyze_and_alert():
+    df = fetch_data()
+    rsi = RSIIndicator(df["close"], window=18).rsi()
+    last_rsi = rsi.iloc[-1]
+    last_close = df["close"].iloc[-1]
+    prev_close = df["close"].iloc[-2]
+    prev_rsi = rsi.iloc[-2]
 
-            key_70 = f"{symbol}_70"
-            key_30 = f"{symbol}_30"
-
-            if prev_rsi < 70 and curr_rsi >= 70 and key_70 not in sent_alerts:
-                send_telegram_message(f"{symbol} 🔺 RSI crossed ABOVE 70 (Overbought)")
-                sent_alerts.add(key_70)
-            elif prev_rsi > 70 and curr_rsi <= 70 and key_70 in sent_alerts:
-                sent_alerts.remove(key_70)
-
-            if prev_rsi > 30 and curr_rsi <= 30 and key_30 not in sent_alerts:
-                send_telegram_message(f"{symbol} 🔻 RSI crossed BELOW 30 (Oversold)")
-                sent_alerts.add(key_30)
-            elif prev_rsi < 30 and curr_rsi >= 30 and key_30 in sent_alerts:
-                sent_alerts.remove(key_30)
-
-        time.sleep(60)
+    if prev_rsi < 50 and last_rsi > 50 and last_close > prev_close:
+        send_telegram_message("LONG signal (RSI crossed above 50 + Price rising)")
+    elif prev_rsi > 50 and last_rsi < 50 and last_close < prev_close:
+        send_telegram_message("SHORT signal (RSI crossed below 50 + Price falling)")
 
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            analyze_and_alert()
+            time.sleep(60)
+        except Exception as e:
+            send_telegram_message(f"Error: {str(e)}")
+            time.sleep(60)
